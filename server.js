@@ -5,7 +5,8 @@ const crypto = require("crypto");
 
 const PORT = Number(process.env.PORT || 8080);
 const STORAGE_DIR = process.env.STORAGE_DIR || "/data/uploads";
-const MAX_FILE_MB = Number(process.env.MAX_FILE_MB || 0);
+const MAX_FILE_MB = Number(process.env.MAX_FILE_MB || 100);
+const APP_VERSION = require("./package.json").version;
 const PUBLIC_URL = process.env.PUBLIC_URL || "http://localhost:8080";
 const JOB_API_KEY = process.env.JOB_API_KEY || "";
 
@@ -57,10 +58,10 @@ function page() {
 }
 
 const server=http.createServer((req,res)=>{
-  const u = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+  const u = new URL(req.url, "http://localhost");
 
   if(req.method==="GET" && u.pathname==="/") return send(res,200,"text/html; charset=utf-8",page());
-  if(req.method==="GET" && u.pathname==="/health") return json(res,200,{ok:true,service:"revo-qr-upload",version:"4.0.0",queue:true});
+  if(req.method==="GET" && u.pathname==="/health") return json(res,200,{ok:true,service:"revo-qr-upload",version:APP_VERSION,queue:true});
   if(req.method==="GET" && u.pathname==="/qr.png"){
     const p=path.join(__dirname,"qr.png");
     if(!fs.existsSync(p)) return send(res,404,"text/plain","QR not found");
@@ -75,12 +76,41 @@ const server=http.createServer((req,res)=>{
     try{filename=path.basename(decodeURIComponent(raw));}catch{filename=path.basename(raw);}
     filename=filename.replace(/[^\w.\-() ]/g,"_");
     if(!filename.toLowerCase().endsWith(".pdf")) filename+=".pdf";
+    const maxBytes=MAX_FILE_MB>0 ? MAX_FILE_MB*1024*1024 : 0;
     const length=Number(req.headers["content-length"]||0);
-    if(MAX_FILE_MB>0 && length>MAX_FILE_MB*1024*1024)
-      return json(res,413,{ok:false,error:"File terlalu besar"});
-    const chunks=[];let total=0;
-    req.on("data",c=>{total+=c.length;chunks.push(c);});
+
+    if(maxBytes>0 && length>maxBytes){
+      return json(res,413,{
+        ok:false,
+        error:"File terlalu besar",
+        maxFileMB:MAX_FILE_MB
+      });
+    }
+
+    const chunks=[];
+    let total=0;
+    let tooLarge=false;
+
+    req.on("data",c=>{
+      total+=c.length;
+
+      if(maxBytes>0 && total>maxBytes){
+        tooLarge=true;
+        return;
+      }
+
+      chunks.push(c);
+    });
+
     req.on("end",()=>{
+      if(tooLarge){
+        return json(res,413,{
+          ok:false,
+          error:"File terlalu besar",
+          maxFileMB:MAX_FILE_MB
+        });
+      }
+
       const data=Buffer.concat(chunks);
       if(data.length<5 || data.subarray(0,5).toString()!=="%PDF-")
         return json(res,400,{ok:false,error:"File bukan PDF yang valid"});
@@ -194,4 +224,4 @@ if(req.method==="POST" && claimMatch){
   send(res,404,"text/plain","Not Found");
 });
 
-server.listen(PORT,"0.0.0.0",()=>console.log(`Revo QR Upload v4.0.0 listening on :${PORT}`));
+server.listen(PORT,"0.0.0.0",()=>console.log(`Revo QR Upload v${APP_VERSION} listening on :${PORT}`));
