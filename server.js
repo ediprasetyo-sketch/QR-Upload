@@ -71,15 +71,22 @@ const server=http.createServer((req,res)=>{
 
   // Public upload endpoint.
   if(req.method==="POST" && u.pathname==="/api/upload"){
-    const raw=req.headers["x-file-name"]||"upload.pdf";
+    const raw=req.headers["x-file-name"] || "upload.pdf";
     let filename;
-    try{filename=path.basename(decodeURIComponent(raw));}catch{filename=path.basename(raw);}
-    filename=filename.replace(/[^\w.\-() ]/g,"_");
-    if(!filename.toLowerCase().endsWith(".pdf")) filename+=".pdf";
-    const maxBytes=MAX_FILE_MB>0 ? MAX_FILE_MB*1024*1024 : 0;
-    const length=Number(req.headers["content-length"]||0);
+    try {
+      filename=path.basename(decodeURIComponent(String(raw)));
+    } catch(e) {
+      filename=path.basename(String(raw));
+    }
 
-    if(maxBytes>0 && length>maxBytes){
+    filename=filename.replace(/[\/\\:*?"<>|]/g,"_");
+    if(!filename.toLowerCase().endsWith(".pdf")) filename+=".pdf";
+
+    const maxBytes=MAX_FILE_MB>0 ? MAX_FILE_MB*1024*1024 : 0;
+    const declaredLength=Number(req.headers["content-length"] || 0);
+
+    // Reject an oversized request before accepting its body.
+    if(maxBytes>0 && declaredLength>maxBytes){
       return json(res,413,{
         ok:false,
         error:"File terlalu besar",
@@ -87,41 +94,84 @@ const server=http.createServer((req,res)=>{
       });
     }
 
-    const chunks=[];
+    const tempName=".upload-"+process.pid+"-"+Date.now()+"-"+Math.random().toString(16).slice(2)+".tmp";
+    const tempPath=path.join(STORAGE_DIR,tempName);
+
+    const out=fs.createWriteStream(tempPath,{flags:"wx"});
     let total=0;
     let tooLarge=false;
+    let firstChunk=Buffer.alloc(0);
 
-    req.on("data",c=>{
-      total+=c.length;
+    req.on("data",chunk=>{
+      total+=chunk.length;
+
+      if(firstChunk.length<5){
+        firstChunk=Buffer.concat([
+          firstChunk,
+          chunk.subarray(0,5-firstChunk.length)
+        ]);
+      }
 
       if(maxBytes>0 && total>maxBytes){
         tooLarge=true;
+        req.destroy();
         return;
       }
 
-      chunks.push(c);
+      out.write(chunk);
+    });
+
+    req.on("error",err=>{
+      out.destroy();
+      try{fs.unlinkSync(tempPath);}catch(_){}
     });
 
     req.on("end",()=>{
-      if(tooLarge){
-        return json(res,413,{
-          ok:false,
-          error:"File terlalu besar",
-          maxFileMB:MAX_FILE_MB
-        });
-      }
+      out.end(()=>{
+        if(tooLarge || (maxBytes>0 && total>maxBytes)){
+          try{fs.unlinkSync(tempPath);}catch(_){}
+          return json(res,413,{
+            ok:false,
+            error:"File terlalu besar",
+            maxFileMB:MAX_FILE_MB
+          });
+        }
 
-      const data=Buffer.concat(chunks);
-      if(data.length<5 || data.subarray(0,5).toString()!=="%PDF-")
-        return json(res,400,{ok:false,error:"File bukan PDF yang valid"});
-      const id="RP-"+crypto.randomBytes(5).toString("hex").toUpperCase();
-      const dir=jobDir(id);fs.mkdirSync(dir,{recursive:true});
-      const out=path.join(dir,filename);fs.writeFileSync(out,data);
-      const now=new Date().toISOString();
-      const job={jobId:id,filename,size:data.length,createdAt:now,status:"uploaded"};
-      saveJob(job);
-      json(res,201,{ok:true,job});
+        // Basic PDF signature validation.
+        if(total<5 || firstChunk.toString("ascii")!=="%PDF-"){
+          try{fs.unlinkSync(tempPath);}catch(_){}
+          return json(res,400,{
+            ok:false,
+            error:"File bukan PDF yang valid"
+          });
+        }
+
+        const id="RP-"+crypto.randomBytes(5).toString("hex").toUpperCase();
+        const dir=jobDir(id);
+        fs.mkdirSync(dir,{recursive:true});
+
+        const outPath=path.join(dir,filename);
+        try{
+          fs.renameSync(tempPath,outPath);
+        }catch(err){
+          try{fs.copyFileSync(tempPath,outPath);}catch(_){}
+          try{fs.unlinkSync(tempPath);}catch(_){}
+        }
+
+        const now=new Date().toISOString();
+        const job={
+          jobId:id,
+          filename,
+          size:total,
+          createdAt:now,
+          status:"uploaded"
+        };
+
+        saveJob(job);
+        return json(res,201,{ok:true,job});
+      });
     });
+
     return;
   }
 
