@@ -1,0 +1,7 @@
+{
+  "name": "revo-qr-upload",
+  "version": "1.5.5",
+  "private": true,
+  "description": "Revo QR Upload V1.1 for NAS",
+  "main": "server.js"
+}
