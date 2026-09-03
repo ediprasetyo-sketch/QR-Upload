@@ -1,0 +1,31 @@
+# Revo QR Upload V1.3 - Nginx reverse proxy example
+#
+# IMPORTANT:
+# - This is a deployment reference only. Do not overwrite Synology's generated
+#   nginx.conf directly.
+# - Keep the application bound to NAS port 8081 (host) -> 8080 (container).
+# - Cloudflare should point the public hostname to the NAS; do not expose 8081
+#   directly to the Internet.
+
+server {
+    listen 443 ssl;
+    server_name qr.revolearning.online;
+
+    # Match the application's configured MAX_FILE_MB (100 MB by default).
+    client_max_body_size 100m;
+
+    location / {
+        proxy_pass http://127.0.0.1:8081;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # PDF uploads can take longer than a normal page request.
+        proxy_connect_timeout 10s;
+        proxy_send_timeout 120s;
+        proxy_read_timeout 120s;
+    }
+}
